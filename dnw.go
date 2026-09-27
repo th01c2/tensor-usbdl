@@ -1,9 +1,11 @@
 package tensorutils
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/JoshuaDoes/crunchio"
@@ -279,14 +281,44 @@ func (dnw *DNW) Write(p []byte) (int, error) {
 	return dnw.write(p)
 }
 func (dnw *DNW) write(p []byte) (int, error) {
-	n, err := dnw.port.Write(p)
-	if err != nil {
-		return n, err
+	// EINTR-safe write.
+	//
+	// Upstream aborts the whole transfer when Write() or Drain() returns
+	// EINTR (interrupted system call). tcdrain() is routinely interrupted,
+	// which is why large images (ABLB ~1.5MB, TZSB ~5MB) die part-way
+	// through while the device stays enumerated. Retry instead.
+	const maxEINTR = 100
+	total := 0
+	for total < len(p) {
+		n, err := dnw.port.Write(p[total:])
+		if n > 0 {
+			total += n
+		}
+		if err != nil {
+			if errors.Is(err, syscall.EINTR) || errors.Is(err, syscall.EAGAIN) {
+				time.Sleep(2 * time.Millisecond)
+				continue
+			}
+			return total, err
+		}
+		if n == 0 {
+			time.Sleep(2 * time.Millisecond) // avoid a busy loop on a short write
+		}
 	}
-	if err := dnw.port.Drain(); err != nil {
-		return n, err
+
+	// Drain is advisory here: never let it abort a transfer.
+	for i := 0; i < maxEINTR; i++ {
+		err := dnw.port.Drain()
+		if err == nil {
+			break
+		}
+		if errors.Is(err, syscall.EINTR) {
+			time.Sleep(2 * time.Millisecond)
+			continue
+		}
+		break
 	}
-	return n, nil
+	return total, nil
 }
 
 func (dnw *DNW) Close() error {
