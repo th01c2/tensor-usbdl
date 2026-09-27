@@ -281,12 +281,6 @@ func (dnw *DNW) Write(p []byte) (int, error) {
 	return dnw.write(p)
 }
 func (dnw *DNW) write(p []byte) (int, error) {
-	// EINTR-safe write.
-	//
-	// Upstream aborts the whole transfer when Write() or Drain() returns
-	// EINTR (interrupted system call). tcdrain() is routinely interrupted,
-	// which is why large images (ABLB ~1.5MB, TZSB ~5MB) die part-way
-	// through while the device stays enumerated. Retry instead.
 	const maxEINTR = 100
 	total := 0
 	for total < len(p) {
@@ -302,11 +296,10 @@ func (dnw *DNW) write(p []byte) (int, error) {
 			return total, err
 		}
 		if n == 0 {
-			time.Sleep(2 * time.Millisecond) // avoid a busy loop on a short write
+			time.Sleep(2 * time.Millisecond)
 		}
 	}
 
-	// Drain is advisory here: never let it abort a transfer.
 	for i := 0; i < maxEINTR; i++ {
 		err := dnw.port.Drain()
 		if err == nil {
